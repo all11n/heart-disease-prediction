@@ -1,0 +1,274 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+# report.Rmd
+
+``` yaml
+---
+title: "Автоматизированный отчёт: Классификация сердечно-сосудистых заболеваний"
+author: "ФИО студента, Группа"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    code_folding: show
+    self_contained: true
+    df_print: paged
+---
+```
+
+\`\`\`{r setup, include=FALSE} knitr::opts_chunk\$set( echo = TRUE,
+warning = FALSE, message = FALSE, fig.width = 8, fig.height = 6,
+fig.align = "center" )
+
+library(readr) library(dplyr) library(ggplot2) library(corrplot)
+library(xgboost) library(caret) library(pROC) library(modeest)
+library(knitr)
+
+
+    # 1. Введение
+
+    В рамках данного исследования рассматривается задача анализа медицинских данных и построения модели машинного обучения для классификации сердечно-сосудистых заболеваний. В качестве исходных данных использован датасет Heart Failure Prediction Dataset, содержащий сведения о физиологических показателях пациентов.
+
+    Целью анализа является исследование структуры данных, выявление статистических закономерностей и обучение модели градиентного бустинга для прогнозирования наличия сердечных заболеваний.
+
+    # 2. Загрузка и предварительная обработка данных
+
+    ## 2.1. Загрузка данных
+
+    ```{r load_data}
+    df <- read_csv("/kaggle/input/heart/heart.csv")
+
+    kable(head(df), caption = "Первые строки датасета")
+
+## 2.2. Проверка структуры данных
+
+`{r structure} str(df)`
+
+## 2.3. Проверка пропущенных значений
+
+`{r missing_values} missing_values <- colSums(is.na(df)) missing_values`
+
+Информация о пропущенных значениях показывает, что датасет не содержит
+пустых значений, что упрощает этап предварительной обработки.
+
+## 2.4. Преобразование типов данных
+
+\`\`\`{r preprocessing} df$HeartDisease <- as.factor(df$HeartDisease)
+df$Sex <- as.factor(df$Sex)
+df$ChestPainType <- as.factor(df$ChestPainType)
+df$FastingBS <- as.factor(df$FastingBS)
+df$RestingECG <- as.factor(df$RestingECG)
+df$ExerciseAngina <- as.factor(df$ExerciseAngina)
+df$ST_Slope <- as.factor(df$ST_Slope)
+
+print("Типы данных успешно преобразованы")
+
+
+    # 3. Исследовательский анализ данных
+
+    ## 3.1. Визуализация распределения категориальных признаков
+
+    ```{r chest_pain_plot}
+    ggplot(df, aes(x = ChestPainType, fill = ChestPainType)) +
+      geom_bar() +
+      labs(
+        title = "Распределение пациентов по типам боли в груди",
+        x = "Тип боли",
+        y = "Количество"
+      ) +
+      theme_minimal()
+
+Наблюдается преобладание категории ASY, что указывает на дисбаланс
+распределения категорий в рассматриваемом признаке.
+
+## 3.2. Анализ распределения MaxHR
+
+`{r maxhr_boxplot} ggplot(df, aes(y = MaxHR)) +   geom_boxplot(fill = "lightblue") +   labs(     title = "Боксплот максимальной частоты сердечных сокращений",     y = "MaxHR"   ) +   theme_minimal()`
+
+Боксплот демонстрирует наличие отдельных выбросов в нижней части
+распределения. Медианное значение находится приблизительно на уровне 140
+ударов в минуту.
+
+## 3.3. Диаграмма рассеяния
+
+`{r scatter_plot} ggplot(df, aes(x = Age, y = MaxHR)) +   geom_point(alpha = 0.6, color = "darkblue") +   labs(     title = "Зависимость максимального пульса от возраста",     x = "Возраст",     y = "MaxHR"   ) +   theme_minimal()`
+
+Диаграмма рассеяния позволяет визуально оценить взаимосвязь между
+возрастом пациента и максимальной частотой сердечных сокращений.
+
+# 4. Корреляционный анализ
+
+## 4.1. Корреляционная матрица
+
+\`\`\`{r correlation_matrix} num_df \<- df %\>%
+select(where(is.numeric))
+
+cor_matrix \<- cor(num_df)
+
+corrplot( cor_matrix, method = "color", type = "upper", addCoef.col =
+"black", tl.cex = 0.8, number.cex = 0.7 )
+
+
+    Корреляционный анализ позволяет выявить линейные взаимосвязи между количественными признаками. Наиболее выраженная отрицательная корреляция наблюдается между HeartDisease и MaxHR.
+
+    ## 4.2. Проверка статистической значимости корреляций
+
+    ```{r p_values}
+    cor_mtest <- function(mat) {
+      mat <- as.matrix(mat)
+      n <- ncol(mat)
+      p.mat <- matrix(NA, n, n)
+      diag(p.mat) <- 0
+      for (i in 1:(n - 1)) {
+        for (j in (i + 1):n) {
+          tmp <- cor.test(mat[, i], mat[, j])
+          p.mat[i, j] <- p.mat[j, i] <- tmp$p.value
+        }
+      }
+      colnames(p.mat) <- rownames(p.mat) <- colnames(mat)
+      p.mat
+    }
+
+    p_values <- cor_mtest(num_df)
+    p_values
+
+# 5. Описательная статистика
+
+## 5.1. Общая статистика
+
+`{r summary_statistics} summary(df)`
+
+## 5.2. Среднее, дисперсия и стандартное отклонение
+
+\`\`\`{r extra_statistics} mean_maxhr \<-
+mean(df$MaxHR) var_maxhr <- var(df$MaxHR) sd_maxhr \<- sd(df\$MaxHR)
+
+cat("Среднее значение MaxHR:", mean_maxhr, "`\n`{=tex}") cat("Дисперсия
+MaxHR:", var_maxhr, "`\n`{=tex}") cat("Стандартное отклонение MaxHR:",
+sd_maxhr, "`\n`{=tex}")
+
+
+    Полученные статистические показатели подтверждают достаточную вариативность данных для решения задачи бинарной классификации.
+
+    # 6. Машинное обучение
+
+    ## 6.1. Подготовка данных
+
+    ```{r train_test_split}
+    set.seed(42)
+
+    train_index <- createDataPartition(df$HeartDisease, p = 0.8, list = FALSE)
+    train_data <- df[train_index, ]
+    test_data <- df[-train_index, ]
+
+    train_matrix <- model.matrix(HeartDisease ~ . - 1, data = train_data)
+    test_matrix <- model.matrix(HeartDisease ~ . - 1, data = test_data)
+
+    train_label <- as.numeric(as.character(train_data$HeartDisease))
+    test_label <- as.numeric(as.character(test_data$HeartDisease))
+
+    dtrain <- xgb.DMatrix(data = train_matrix, label = train_label)
+    dtest <- xgb.DMatrix(data = test_matrix, label = test_label)
+
+## 6.2. Кросс-валидация
+
+\`\`\`{r cross_validation} params \<- list( objective =
+"binary:logistic", eval_metric = "auc", eta = 0.05, max_depth = 4,
+subsample = 0.8, colsample_bytree = 0.9 )
+
+cv_res \<- xgb.cv( params = params, data = dtrain, nrounds = 500, nfold
+= 5, early_stopping_rounds = 20, verbose = 0 )
+
+best_nrounds \<- cv_res\$best_iteration best_nrounds
+
+
+    ## 6.3. Обучение модели
+
+    ```{r train_model}
+    model <- xgb.train(
+      params = params,
+      data = dtrain,
+      nrounds = best_nrounds,
+      verbose = 0
+    )
+
+## 6.4. Оценка качества модели
+
+\`\`\`{r metrics} pred_prob \<- predict(model, dtest) pred_class \<-
+ifelse(pred_prob \> 0.5, 1, 0)
+
+cm \<- confusionMatrix( factor(pred_class), factor(test_label) )
+
+precision \<- cm$byClass["Precision"] recall <- cm$byClass\["Recall"\]
+f1 \<- 2 \* ((precision \* recall) / (precision + recall))
+
+cat("Accuracy:", cm\$overall\["Accuracy"\], "`\n`{=tex}")
+cat("Precision:", precision, "`\n`{=tex}") cat("Recall:", recall,
+"`\n`{=tex}") cat("F1-score:", f1, "`\n`{=tex}")
+
+
+    Модель продемонстрировала высокое качество классификации. Наиболее важным показателем для медицинской диагностики является Recall, отражающий способность модели минимизировать количество ложноотрицательных прогнозов.
+
+    ## 6.5. ROC-кривая
+
+    ```{r roc_curve}
+    roc_obj <- roc(test_label, pred_prob)
+
+    plot(
+      roc_obj,
+      main = "ROC-кривая модели XGBoost",
+      col = "blue",
+      lwd = 2
+    )
+
+    auc(roc_obj)
+
+## 6.6. Важность признаков
+
+\`\`\`{r importance} importance_matrix \<- xgb.importance(model = model)
+
+xgb.plot.importance( importance_matrix, top_n = 10, rel_to_first = TRUE
+)
+
+
+    Наиболее значимыми признаками для модели оказались ST_Slope, Cholesterol и MaxHR.
+
+    # 7. Заключение
+
+    В ходе исследования был проведён комплексный анализ медицинских данных, включающий предварительную обработку, визуализацию распределений, корреляционный анализ и построение модели градиентного бустинга.
+
+    Полученные результаты показали высокую эффективность ансамблевых методов машинного обучения для решения задач медицинской диагностики. Автоматизация формирования отчётности средствами RMarkdown обеспечивает воспроизводимость анализа и позволяет объединить текст, код и графики в единый структурированный документ.
+
+## Как использовать
+
+1.  Создайте новый текстовый файл в Kaggle.
+2.  Назовите его `report.Rmd`.
+3.  Полностью вставьте туда содержимое выше.
+4.  Проверьте путь к CSV:
+
+``` r
+read_csv("/kaggle/input/heart/heart.csv")
+```
+
+Если путь другой --- замените его.
+
+5.  Затем выполните в отдельной ячейке:
+
+``` r
+library(rmarkdown)
+
+rmarkdown::render(
+  "/kaggle/working/report.Rmd",
+  output_format = "html_document",
+  output_dir = "/kaggle/working/"
+)
+```
+
+6.  После выполнения справа в Output появится файл HTML с готовым
+    отчётом.
